@@ -5,7 +5,7 @@ import multiprocessing as mp
 def gpu_hell_fire(proc_id, counter, stop_event):
     # 1. 캐시 크기보다 훨씬 큰 데이터셋 준비 (A100 L2 캐시는 40MB에 불과함)
     # 16K 행렬 여러 개를 리스트에 담아 매번 다른 행렬을 연산하게 함
-    size = 1024 * 16
+    size = 1024 * 16 * 2
     num_buffers = 8 # 총 12GB 이상의 메모리 점유하여 캐시 순환 유도
     
     # 텐서 코어 가속 활성화
