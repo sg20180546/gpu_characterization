@@ -72,7 +72,7 @@ def monitor_process(counter, stop_event, num_procs):
         last_time = curr_time
 
 if __name__ == "__main__":
-    num_procs = 4  # A100을 압착하기 위한 병렬 프로세스 수
+    num_procs = 8  # A100을 압착하기 위한 병렬 프로세스 수
     counter = mp.Value('i', 0)
     stop_event = mp.Event()
     
