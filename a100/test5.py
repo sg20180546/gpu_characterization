@@ -5,7 +5,7 @@ import multiprocessing as mp
 def gpu_heavy_load(proc_id, counter, stop_event):
     """GPU를 쉴 틈 없이 갈구는 연산 프로세스"""
     # 1. 행렬 크기 확대 (메모리 대역폭 타격용)
-    size = 1024 * 16 * 4  
+    size = 1024 * 16 * 2
     
     # 2. Tensor Core 가속 활성화 (TF32) - 전력 소모 극대화
     torch.backends.cuda.matmul.allow_tf32 = True
