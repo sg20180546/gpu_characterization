@@ -97,3 +97,44 @@ print(f"▶ TF32 Acceleration: FP32 대비 약 {tf32_thr/fp32_thr:.2f}배 빠름
 print(f"▶ BF16 Acceleration: FP32 대비 약 {bf16_thr/fp32_thr:.2f}배 빠름")
 print(f"▶ Energy Efficiency: '{max_efc_mode}' 모드가 전력 대비 가장 많은 연산을 수행함")
 print("="*75 + "\n")
+
+
+# (sj) elicer@d2abfd222339:~/gpu_characterization/a100$ python ./test1.py 
+
+# ===========================================================================
+#  GPU Model: NVIDIA A100 80GB PCIe
+#  Test Scenario: BERT-Base Training (Batch Size: 64)
+# ===========================================================================
+# Mode       | Throughput      | Avg Power    | Perf / Watt
+# ---------------------------------------------------------------------------
+# FP32       |     230.56 s/s |     299.89 W |         0.77
+# TF32       |     863.29 s/s |     300.79 W |         2.87
+# FP16       |    1588.79 s/s |     209.69 W |         7.58
+# BF16       |    1575.21 s/s |     272.09 W |         5.79
+# ===========================================================================
+
+# [ Performance Characterization Summary ]
+# ▶ TF32 Acceleration: FP32 대비 약 3.74배 빠름
+# ▶ BF16 Acceleration: FP32 대비 약 6.83배 빠름
+# ▶ Energy Efficiency: 'FP16' 모드가 전력 대비 가장 많은 연산을 수행함
+# ===========================================================================
+
+# (sj) elicer@d2abfd222339:~/gpu_characterization/a100$ python ./test1.py 
+
+# ===========================================================================
+#  GPU Model: NVIDIA A100 80GB PCIe
+#  Test Scenario: BERT-Base Training (Batch Size: 64)
+# ===========================================================================
+# Mode       | Throughput      | Avg Power    | Perf / Watt
+# ---------------------------------------------------------------------------
+# FP32       |     230.64 s/s |     304.91 W |         0.76
+# TF32       |     858.95 s/s |     301.50 W |         2.85
+# FP16       |    1627.00 s/s |     225.44 W |         7.22
+# BF16       |    1607.20 s/s |     275.57 W |         5.83
+# ===========================================================================
+
+# [ Performance Characterization Summary ]
+# ▶ TF32 Acceleration: FP32 대비 약 3.72배 빠름
+# ▶ BF16 Acceleration: FP32 대비 약 6.97배 빠름
+# ▶ Energy Efficiency: 'FP16' 모드가 전력 대비 가장 많은 연산을 수행함
+# ===========================================================================
