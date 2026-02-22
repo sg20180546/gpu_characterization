@@ -2,88 +2,96 @@ import torch
 import time
 import multiprocessing as mp
 
-def gpu_stress_process(counter, stop_event):
-    """GPU에 쉴 틈 없이 매트릭스 연산을 퍼붓는 프로세스"""
-    size = 1024 * 12
-    # 공유 메모리를 쓰지 않고 각 프로세스에서 독립적으로 연산
+def gpu_heavy_load(proc_id, counter, stop_event):
+    """GPU를 쉴 틈 없이 갈구는 연산 프로세스"""
+    # 1. 행렬 크기 확대 (메모리 대역폭 타격용)
+    size = 1024 * 16  
+    
+    # 2. Tensor Core 가속 활성화 (TF32) - 전력 소모 극대화
+    torch.backends.cuda.matmul.allow_tf32 = True
+    
+    # 여러 개의 행렬을 메모리에 올려 데이터 전송 부하 유도
     a = torch.randn(size, size, device='cuda', dtype=torch.float32)
     b = torch.randn(size, size, device='cuda', dtype=torch.float32)
     
-    while not stop_event.is_set():
-        torch.matmul(a, b)
-        # 연산이 끝날 때마다 공유 카운터를 1씩 증가
-        with counter.get_lock():
-            counter.value += 1
-        # 가속을 위해 synchronize를 빼고 스트리밍으로 연산
+    local_count = 0
+    last_sync_time = time.time()
 
-def monitor_process(counter, stop_event):
-    """카운터를 읽어서 초당 처리율과 변화율을 계산하고 출력하는 프로세스"""
-    size = 1024 * 12
+    while not stop_event.is_set():
+        # 실제 연산 수행
+        torch.matmul(a, b)
+        local_count += 1
+        
+        # 매번 Lock을 걸지 않고, 0.1초마다 한 번씩만 메인 카운터에 보고 (CPU 병목 방지)
+        if time.time() - last_sync_time > 0.1:
+            with counter.get_lock():
+                counter.value += local_count
+            local_count = 0
+            last_sync_time = time.time()
+
+def monitor_process(counter, stop_event, num_procs):
+    """처리율 및 변화율 실시간 모니터링"""
+    size = 1024 * 16
     ops_per_matmul = 2 * (size ** 3)
     
-    history = []
     baseline_tflops = None
+    history = []
     
-    print(f"[{time.strftime('%H:%M:%S')}] A100 지속 부하 테스트 및 실시간 모니터링 시작...")
-    print("-" * 75)
-    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change':<12} | {'Total Ops'}")
-    print("-" * 75)
+    print(f"[{time.strftime('%H:%M:%S')}] A100 가혹 부하 테스트 (프로세스 {num_procs}개)")
+    print("-" * 80)
+    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change (%)':<12} | {'Total Ops'}")
+    print("-" * 80)
     
-    start_time = time.time()
     last_count = 0
-    last_check_time = start_time
+    last_time = time.time()
 
-    try:
-        while not stop_event.is_set():
-            time.sleep(1) # 1초 간격으로 리포트
+    while not stop_event.is_set():
+        time.sleep(1)
+        
+        curr_time = time.time()
+        with counter.get_lock():
+            curr_count = counter.value
             
-            current_time = time.time()
-            with counter.get_lock():
-                current_count = counter.value
-            
-            # 인터벌 동안의 연산 횟수 계산
-            interval_count = current_count - last_count
-            interval_time = current_time - last_check_time
-            
-            # TFLOPS 계산
-            curr_tflops = (interval_count * ops_per_matmul / interval_time) / 1e12
-            
-            # Baseline 설정 (첫 5초)
-            if baseline_tflops is None:
-                history.append(curr_tflops)
-                if len(history) >= 5:
-                    baseline_tflops = sum(history) / len(history)
-                change_str = "Calculating..."
-            else:
-                change_rate = (curr_tflops / baseline_tflops) * 100
-                change_str = f"{change_rate:>6.2f} %"
+        dt = curr_time - last_time
+        dc = curr_count - last_count
+        
+        tflops = (dc * ops_per_matmul / dt) / 1e12
+        
+        if baseline_tflops is None:
+            history.append(tflops)
+            if len(history) >= 5:
+                baseline_tflops = max(history)
+            change_str = "Wait..."
+        else:
+            change_pct = (tflops / baseline_tflops) * 100
+            change_str = f"{change_pct:>8.2f} %"
 
-            timestamp = time.strftime("%H:%M:%S")
-            print(f"{timestamp:<10} | {curr_tflops:>8.2f} | {change_str:<12} | {current_count:>10}")
-            
-            last_count = current_count
-            last_check_time = current_time
-            
-    except KeyboardInterrupt:
-        stop_event.set()
+        print(f"{time.strftime('%H:%M:%S'):<10} | {tflops:>10.2f} | {change_str:<12} | {curr_count:>10}")
+        
+        last_count = curr_count
+        last_time = curr_time
 
 if __name__ == "__main__":
-    # 공유 카운터와 중지 이벤트 생성
+    num_procs = 4  # A100을 압착하기 위한 병렬 프로세스 수
     counter = mp.Value('i', 0)
     stop_event = mp.Event()
     
-    # 두 프로세스 시작
-    p_stress = mp.Process(target=gpu_stress_process, args=(counter, stop_event))
-    p_monitor = mp.Process(target=monitor_process, args=(counter, stop_event))
+    # 1. 모니터링 시작
+    p_mon = mp.Process(target=monitor_process, args=(counter, stop_event, num_procs))
+    p_mon.start()
     
-    p_stress.start()
-    p_monitor.start()
+    # 2. 다중 연산 프로세스 시작
+    workers = []
+    for i in range(num_procs):
+        p = mp.Process(target=gpu_heavy_load, args=(i, counter, stop_event))
+        p.start()
+        workers.append(p)
     
     try:
-        p_stress.join()
-        p_monitor.join()
+        p_mon.join()
     except KeyboardInterrupt:
+        print("\n[!] 중단 요청. 프로세스 정리 중...")
         stop_event.set()
-        p_stress.terminate()
-        p_monitor.terminate()
-        print("\n테스트를 강제 종료합니다.")
+        for w in workers:
+            w.terminate()
+        p_mon.terminate()
