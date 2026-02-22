@@ -1,0 +1,8 @@
+# --section Roofline: Roofline 분석 데이터 수집
+# --metrics: 구체적인 하드웨어 활용률 지표 추가
+ncu --section Roofline --metrics smsp__sass_thread_inst_executed_op_fadd_pred_on.sum,smsp__sass_thread_inst_executed_op_fmul_pred_on.sum \
+         -o roofline_report \
+         -f python test3.py
+
+
+ncu --import roofline_report.ncu-res --page details

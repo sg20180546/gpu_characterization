@@ -1,32 +1,78 @@
 import torch
 import time
 
-# 1. Compute-bound 커널 (Matrix Multiplication)
-# 연산량이 매우 많아 GPU의 산술 성능 한계까지 밀어붙입니다.
-def compute_heavy_task():
-    size = 8192
-    a = torch.randn(size, size, device='cuda', dtype=torch.float32)
-    b = torch.randn(size, size, device='cuda', dtype=torch.float32)
+def profile_custom_roofline(name, func, iters=50):
+    # A100 80GB PCIe 이론적 스펙 (기준점)
+    PEAK_FLOPS = 19.5 * 1e12  # FP32 Peak (19.5 TFLOPS)
+    PEAK_BW = 1935 * 1e9      # Memory BW (1.935 TB/s)
     
-    # Nsight Compute가 캡처할 수 있도록 이름을 지정한 커널 실행
-    print("Running Compute-bound kernel...")
-    for _ in range(10):
-        torch.matmul(a, b)
+    # Warm up
+    func()
     torch.cuda.synchronize()
+    
+    # 시간 측정 및 전력 측정 준비
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    
+    start_event.record()
+    for _ in range(iters):
+        func()
+    end_event.record()
+    torch.cuda.synchronize()
+    
+    elapsed_time = start_event.elapsed_time(end_event) / 1000.0  # seconds
+    avg_time = elapsed_time / iters
+    
+    return avg_time
 
-# 2. Memory-bound 커널 (Vector Addition)
-# 연산은 단순하지만 데이터 이동량이 많아 메모리 대역폭을 주로 사용합니다.
-def memory_heavy_task():
-    size = 1024 * 1024 * 256 # 대용량 벡터
-    x = torch.randn(size, device='cuda', dtype=torch.float32)
-    y = torch.randn(size, device='cuda', dtype=torch.float32)
+# --- 테스트할 커널들 ---
+def compute_kernel():
+    # Matrix Mul: Ops = 2 * N^3
+    N = 4096
+    a = torch.randn(N, N, device='cuda')
+    b = torch.randn(N, N, device='cuda')
+    ops = 2 * (N ** 3)
+    bytes_moved = 3 * (N ** 2) * 4 # A, B, C 읽고 쓰기 (float32=4bytes)
     
-    print("Running Memory-bound kernel...")
-    for _ in range(10):
-        z = x + y
-    torch.cuda.synchronize()
+    t = profile_custom_roofline("Compute", lambda: torch.matmul(a, b))
+    
+    tflops = (ops / t) / 1e12
+    bw_used = (bytes_moved / t) / 1e9
+    intensity = ops / bytes_moved # 산술 강도
+    
+    print(f"\n[{name.upper()} KERNEL RESULT]")
+    print(f"Throughput: {tflops:.2f} TFLOPS (Peak 대비 {tflops/19.5*100:.1f}%)")
+    print(f"Mem BW Used: {bw_used:.2f} GB/s (Peak 대비 {bw_used/1935*100:.1f}%)")
+    print(f"Arithmetic Intensity: {intensity:.2f} FLOPs/Byte")
+    
+    # 병목 진단
+    if tflops / 19.5 > bw_used / 1935:
+        print(">> Diagnosis: COMPUTE-BOUND (연산기 성능 한계에 근접)")
+    else:
+        print(">> Diagnosis: MEMORY-BOUND (메모리 대역폭 한계에 근접)")
+
+def memory_kernel():
+    # Vector Add: Ops = N, Bytes = 3 * N * 4
+    N = 1024 * 1024 * 128
+    x = torch.randn(N, device='cuda')
+    y = torch.randn(N, device='cuda')
+    ops = N
+    bytes_moved = 3 * N * 4
+    
+    t = profile_custom_roofline("Memory", lambda: x + y)
+    
+    tflops = (ops / t) / 1e12
+    bw_used = (bytes_moved / t) / 1e9
+    intensity = ops / bytes_moved
+    
+    print(f"\n[{name.upper()} KERNEL RESULT]")
+    print(f"Throughput: {tflops:.4f} TFLOPS")
+    print(f"Mem BW Used: {bw_used:.2f} GB/s (Peak 대비 {bw_used/1935*100:.1f}%)")
+    print(f"Arithmetic Intensity: {intensity:.2f} FLOPs/Byte")
+    print(">> Diagnosis: MEMORY-BOUND (데이터 옮기느라 바쁨)")
 
 if __name__ == "__main__":
-    # Warm up
-    compute_heavy_task()
-    memory_heavy_task()
+    name = "Compute-bound"
+    compute_kernel()
+    name = "Memory-bound"
+    memory_kernel()
