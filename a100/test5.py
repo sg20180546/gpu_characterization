@@ -1,65 +1,89 @@
 import torch
 import time
+import multiprocessing as mp
 
-def run_throttling_profile():
-    # A100 부하를 위한 매트릭스 크기 (기존보다 더 키워 부하를 극대화)
-    size = 1024 * 14  
+def gpu_stress_process(counter, stop_event):
+    """GPU에 쉴 틈 없이 매트릭스 연산을 퍼붓는 프로세스"""
+    size = 1024 * 12
+    # 공유 메모리를 쓰지 않고 각 프로세스에서 독립적으로 연산
     a = torch.randn(size, size, device='cuda', dtype=torch.float32)
     b = torch.randn(size, size, device='cuda', dtype=torch.float32)
     
-    # 1회 연산당 FLOPs: 2 * N^3
+    while not stop_event.is_set():
+        torch.matmul(a, b)
+        # 연산이 끝날 때마다 공유 카운터를 1씩 증가
+        with counter.get_lock():
+            counter.value += 1
+        # 가속을 위해 synchronize를 빼고 스트리밍으로 연산
+
+def monitor_process(counter, stop_event):
+    """카운터를 읽어서 초당 처리율과 변화율을 계산하고 출력하는 프로세스"""
+    size = 1024 * 12
     ops_per_matmul = 2 * (size ** 3)
     
-    baseline_tflops = None
-    print(f"[{time.strftime('%H:%M:%S')}] A100 쓰로틀링 프로파일링 시작...")
-    print(f"기준 성능 설정 중 (초기 5초)...")
-    print("-" * 70)
-    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change':<12} | {'Status'}")
-    print("-" * 70)
-
     history = []
+    baseline_tflops = None
+    
+    print(f"[{time.strftime('%H:%M:%S')}] A100 지속 부하 테스트 및 실시간 모니터링 시작...")
+    print("-" * 75)
+    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change':<12} | {'Total Ops'}")
+    print("-" * 75)
+    
+    start_time = time.time()
+    last_count = 0
+    last_check_time = start_time
 
     try:
-        while True:
-            start_time = time.time()
-            count = 0
+        while not stop_event.is_set():
+            time.sleep(1) # 1초 간격으로 리포트
             
-            # 1초 동안 반복 실행
-            while time.time() - start_time < 1.0:
-                torch.matmul(a, b)
-                count += 1
+            current_time = time.time()
+            with counter.get_lock():
+                current_count = counter.value
             
-            torch.cuda.synchronize()
-            actual_duration = time.time() - start_time
+            # 인터벌 동안의 연산 횟수 계산
+            interval_count = current_count - last_count
+            interval_time = current_time - last_check_time
             
-            # 현재 TFLOPS 계산
-            curr_tflops = (count * ops_per_matmul / actual_duration) / 1e12
+            # TFLOPS 계산
+            curr_tflops = (interval_count * ops_per_matmul / interval_time) / 1e12
             
-            # 첫 5회 평균을 기준 성능(Baseline)으로 설정
+            # Baseline 설정 (첫 5초)
             if baseline_tflops is None:
                 history.append(curr_tflops)
                 if len(history) >= 5:
                     baseline_tflops = sum(history) / len(history)
-                change_str = "Setting..."
-                status = "Calibrating"
+                change_str = "Calculating..."
             else:
-                # 기준 대비 변화율 계산
                 change_rate = (curr_tflops / baseline_tflops) * 100
                 change_str = f"{change_rate:>6.2f} %"
-                
-                if change_rate > 98:
-                    status = "Stable"
-                elif change_rate > 90:
-                    status = "Slight Drop"
-                else:
-                    status = "THROTTLING!"
 
-            curr_time = time.strftime("%H:%M:%S")
-            print(f"{curr_time:<10} | {curr_tflops:>8.2f} | {change_str:<12} | {status}")
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{timestamp:<10} | {curr_tflops:>8.2f} | {change_str:<12} | {current_count:>10}")
+            
+            last_count = current_count
+            last_check_time = current_time
             
     except KeyboardInterrupt:
-        print("\n" + "-" * 70)
-        print("테스트 종료. 터미널 B의 nvidia-smi 로그와 비교해 보세요.")
+        stop_event.set()
 
 if __name__ == "__main__":
-    run_throttling_profile()
+    # 공유 카운터와 중지 이벤트 생성
+    counter = mp.Value('i', 0)
+    stop_event = mp.Event()
+    
+    # 두 프로세스 시작
+    p_stress = mp.Process(target=gpu_stress_process, args=(counter, stop_event))
+    p_monitor = mp.Process(target=monitor_process, args=(counter, stop_event))
+    
+    p_stress.start()
+    p_monitor.start()
+    
+    try:
+        p_stress.join()
+        p_monitor.join()
+    except KeyboardInterrupt:
+        stop_event.set()
+        p_stress.terminate()
+        p_monitor.terminate()
+        print("\n테스트를 강제 종료합니다.")
