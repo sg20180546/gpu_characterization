@@ -2,27 +2,36 @@ import torch
 import time
 import multiprocessing as mp
 
-def gpu_heavy_load(proc_id, counter, stop_event):
-    """GPU를 쉴 틈 없이 갈구는 연산 프로세스"""
-    # 1. 행렬 크기 확대 (메모리 대역폭 타격용)
-    size = 1024 * 16 * 2
+def gpu_hell_fire(proc_id, counter, stop_event):
+    # 1. 캐시 크기보다 훨씬 큰 데이터셋 준비 (A100 L2 캐시는 40MB에 불과함)
+    # 16K 행렬 여러 개를 리스트에 담아 매번 다른 행렬을 연산하게 함
+    size = 1024 * 16
+    num_buffers = 8 # 총 12GB 이상의 메모리 점유하여 캐시 순환 유도
     
-    # 2. Tensor Core 가속 활성화 (TF32) - 전력 소모 극대화
+    # 텐서 코어 가속 활성화
     torch.backends.cuda.matmul.allow_tf32 = True
     
-    # 여러 개의 행렬을 메모리에 올려 데이터 전송 부하 유도
-    a = torch.randn(size, size, device='cuda', dtype=torch.float32)
-    b = torch.randn(size, size, device='cuda', dtype=torch.float32)
+    # 여러 개의 버퍼를 생성 (캐시 히트 방지용)
+    buffers = [torch.randn(size, size, device='cuda', dtype=torch.float32) for _ in range(num_buffers)]
+    output = torch.empty(size, size, device='cuda', dtype=torch.float32)
     
     local_count = 0
+    idx = 0
     last_sync_time = time.time()
 
     while not stop_event.is_set():
-        # 실제 연산 수행
-        torch.matmul(a, b)
-        local_count += 1
+        # 2. 매 사이클마다 다른 버퍼 조합을 사용하여 캐시 무력화
+        # A = buffer[0], B = buffer[1] -> 다음은 A = buffer[2], B = buffer[3] ...
+        idx_a = (idx) % num_buffers
+        idx_b = (idx + 1) % num_buffers
         
-        # 매번 Lock을 걸지 않고, 0.1초마다 한 번씩만 메인 카운터에 보고 (CPU 병목 방지)
+        # 실제 연산 (HBM에서 데이터를 강제로 읽어오게 만듦)
+        torch.matmul(buffers[idx_a], buffers[idx_b], out=output)
+        
+        local_count += 1
+        idx += 2
+        
+        # 0.1초마다 카운트 보고
         if time.time() - last_sync_time > 0.1:
             with counter.get_lock():
                 counter.value += local_count
@@ -30,68 +39,59 @@ def gpu_heavy_load(proc_id, counter, stop_event):
             last_sync_time = time.time()
 
 def monitor_process(counter, stop_event, num_procs):
-    """처리율 및 변화율 실시간 모니터링"""
     size = 1024 * 16
     ops_per_matmul = 2 * (size ** 3)
     
     baseline_tflops = None
-    history = []
-    
-    print(f"[{time.strftime('%H:%M:%S')}] A100 가혹 부하 테스트 (프로세스 {num_procs}개)")
-    print("-" * 80)
-    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change (%)':<12} | {'Total Ops'}")
-    print("-" * 80)
+    print(f"[{time.strftime('%H:%M:%S')}] A100 Cache-Busting Stress Test")
+    print("-" * 85)
+    print(f"{'Time':<10} | {'TFLOPS':<10} | {'Change (%)':<12} | {'Temp'} | {'Power'}")
+    print("-" * 85)
     
     last_count = 0
     last_time = time.time()
 
     while not stop_event.is_set():
         time.sleep(1)
-        
         curr_time = time.time()
         with counter.get_lock():
             curr_count = counter.value
-            
+        
         dt = curr_time - last_time
         dc = curr_count - last_count
-        
         tflops = (dc * ops_per_matmul / dt) / 1e12
         
-        if baseline_tflops is None:
+        # 기준 설정
+        if baseline_tflops is None and len(history := []) < 5:
             history.append(tflops)
-            if len(history) >= 5:
-                baseline_tflops = max(history)
+            if len(history) == 5: baseline_tflops = max(history)
             change_str = "Wait..."
         else:
-            change_pct = (tflops / baseline_tflops) * 100
+            change_pct = (tflops / baseline_tflops) * 100 if baseline_tflops else 100
             change_str = f"{change_pct:>8.2f} %"
 
-        print(f"{time.strftime('%H:%M:%S'):<10} | {tflops:>10.2f} | {change_str:<12} | {curr_count:>10}")
-        
+        print(f"{time.strftime('%H:%M:%S'):<10} | {tflops:>10.2f} | {change_str:<12} | Monitoring via smi...")
         last_count = curr_count
         last_time = curr_time
 
 if __name__ == "__main__":
-    num_procs = 8  # A100을 압착하기 위한 병렬 프로세스 수
+    # 프로세스 수를 GPU 코어 수에 맞춰 8개 정도로 증설 (압착 극대화)
+    num_procs = 8 
     counter = mp.Value('i', 0)
     stop_event = mp.Event()
     
-    # 1. 모니터링 시작
-    p_mon = mp.Process(target=monitor_process, args=(counter, stop_event, num_procs))
-    p_mon.start()
-    
-    # 2. 다중 연산 프로세스 시작
     workers = []
     for i in range(num_procs):
-        p = mp.Process(target=gpu_heavy_load, args=(i, counter, stop_event))
+        p = mp.Process(target=gpu_hell_fire, args=(i, counter, stop_event))
         p.start()
         workers.append(p)
+    
+    p_mon = mp.Process(target=monitor_process, args=(counter, stop_event, num_procs))
+    p_mon.start()
     
     try:
         p_mon.join()
     except KeyboardInterrupt:
-        print("\n[!] 중단 요청. 프로세스 정리 중...")
         stop_event.set()
-        for w in workers:
-            w.terminate()
+        for w in workers: w.terminate()
         p_mon.terminate()
