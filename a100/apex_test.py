@@ -6,7 +6,7 @@ from torch.sparse import to_sparse_semi_structured, SparseSemiStructuredTensor
 
 # 성능 차이를 확실히 보기 위해 행렬 크기를 크게 잡습니다.
 DIM = 8192
-BATCH_SIZE = 128
+BATCH_SIZE = 4096
 ITERATIONS = 500
 
 # 1. 모델 및 데이터 준비
