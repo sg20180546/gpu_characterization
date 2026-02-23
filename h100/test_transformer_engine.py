@@ -51,4 +51,4 @@ print("Starting Validated Benchmark on H100...\n")
 latency_bf16 = benchmark(model_bf16, input_data, "Native PyTorch BF16")
 latency_fp8 = benchmark(model_fp8, input_data, "Transformer Engine FP8", use_fp8=True)
 
-print(f"\nSpeedup: {latency_bf16/latency_fp8:.2fx}")
+print(f"\nSpeedup: {latency_bf16/latency_fp8:.2f}x")
