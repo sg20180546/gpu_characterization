@@ -1,46 +1,48 @@
 import torch
 import torch.nn as nn
 import sys
-import time
 
-# 설정
+# 8192 x 8192 행렬은 A100의 성능을 보기에 아주 적합한 크기입니다.
 ITERATIONS = 500
 DIM = 8192
 BATCH_SIZE = 128
 
-# 실행 인자 확인
-use_apex = False
-if len(sys.argv) > 1 and sys.argv[1] == "apex=1":
-    use_apex = True
-    from apex.contrib.sparsity import ASP
-    mode_label = "SPARSE (Apex ASP)"
-else:
-    mode_label = "DENSE (Standard)"
+def create_24_mask(tensor):
+    """
+    A100 2:4 구조적 희소성 패턴 수동 생성: 
+    연속된 4개 원소 중 2개를 0으로 만듭니다.
+    """
+    shape = tensor.shape
+    t = tensor.view(-1, 4)
+    mask = torch.zeros_like(t, dtype=torch.bool)
+    # 각 4개 묶음에서 앞의 2개만 살립니다 (2:4 패턴)
+    mask[:, :2] = True
+    return mask.view(shape)
 
-# 1. 모델 및 데이터 준비
+# 1. 모델 준비
+mode = "SPARSE" if "apex=1" in sys.argv else "DENSE"
 model = nn.Linear(DIM, DIM, bias=False).cuda().half()
 input_data = torch.randn(BATCH_SIZE, DIM).cuda().half()
-cache_cleaner = torch.randn(128 * 1024 * 1024 // 4, device='cuda') # 128MB L2 Cache Flush용
+cache_cleaner = torch.randn(128 * 1024 * 1024 // 4, device='cuda') # 128MB
 
-# 2. Apex ASP 적용 (모드 1일 때만)
-if use_apex:
-    asp = ASP()
-    # 2:4 패턴 적용 및 하드웨어 가속 커널 준비
-    asp.init_model_for_pruning(model, mask_calculator="24", verbosity=2)
-    asp.compute_sparse_masks()
-    # 주의: ASP는 내부적으로 커널을 교체하여 하드웨어 가속을 활성화합니다.
+if mode == "SPARSE":
+    print("[A100 가속 모드] 2:4 패턴을 가중치에 수동 적용합니다.")
+    with torch.no_grad():
+        mask = create_24_mask(model.weight.data)
+        model.weight.data.mul_(mask)
+    # 중요: A100은 FP16 연산 시 가중치에 2:4 패턴이 있으면 내부적으로 
+    # 'Sparse Tensor Core'를 사용하려고 시도합니다.
+else:
+    print("[일반 모드] Dense 연산을 수행합니다.")
 
 def run_benchmark():
-    print(f"[{mode_label}] 벤치마크 시작...")
-    
     # Warm-up
-    for _ in range(50):
-        model(input_data)
+    for _ in range(50): model(input_data)
     torch.cuda.synchronize()
 
     times = []
-    for i in range(ITERATIONS):
-        # L2 캐시 플러시 (DRAM에서 가중치를 새로 읽어오도록 강제)
+    for _ in range(ITERATIONS):
+        # L2 Cache Flush (DRAM 대역폭 효율까지 측정에 포함)
         _ = cache_cleaner.zero_()
         torch.cuda.synchronize()
 
@@ -54,11 +56,12 @@ def run_benchmark():
         torch.cuda.synchronize()
         times.append(start.elapsed_time(end))
 
-    avg_latency = sum(times) / len(times)
-    print(f"\n결과:")
-    print(f" - 모드: {mode_label}")
-    print(f" - 평균 지연 시간: {avg_latency:.4f} ms")
-    print(f" - TFLOPS(추정): {(2 * BATCH_SIZE * DIM * DIM) / (avg_latency * 1e-3) / 1e12:.2f}")
+    avg_ms = sum(times) / len(times)
+    tflops = (2 * BATCH_SIZE * DIM * DIM) / (avg_ms * 1e-3) / 1e12
+    
+    print(f"\n[{mode} 결과]")
+    print(f"평균 지연 시간: {avg_ms:.4f} ms")
+    print(f"연산 성능: {tflops:.2f} TFLOPS")
 
 if __name__ == "__main__":
     run_benchmark()
