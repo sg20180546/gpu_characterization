@@ -48,7 +48,17 @@ def benchmark(model, data, mode_name, use_fp8=False):
 
 # 3. 실행
 print("Starting Validated Benchmark on H100...\n")
-latency_bf16 = benchmark(model_bf16, input_data, "Native PyTorch BF16")
 latency_fp8 = benchmark(model_fp8, input_data, "Transformer Engine FP8", use_fp8=True)
 
+latency_bf16 = benchmark(model_bf16, input_data, "Native PyTorch BF16")
+
 print(f"\nSpeedup: {latency_bf16/latency_fp8:.2f}x")
+
+# (sj) elicer@fc653e2ac6b6:~/gpu_characterization/h100$ python test_transformer_engine.py
+# Starting Validated Benchmark on H100...
+
+# [Native PyTorch BF16] Avg Latency: 0.756 ms
+# [Transformer Engine FP8] Avg Latency: 0.510 ms
+
+# Speedup: 1.48x
+# (sj) elicer@fc653e2ac6b6:~/gpu_characterization/h100$ 
