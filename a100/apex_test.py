@@ -20,9 +20,10 @@ if use_apex:
     asp = ASP()
     asp.init_model_for_pruning(model, mask_calculator="m4n2_1d", verbosity=2)
     asp.compute_sparse_masks()
-    # 마스크가 적용된 weight를 실제 sparse 포맷으로 변환 → 하드웨어 sparse 커널 사용
-    SparseSemiStructuredTensor._FORCE_CUTLASS = False
-    model.weight = nn.Parameter(to_sparse_semi_structured(model.weight))
+    # 마스크가 적용된 weight를 실제 sparse 포맷으로 변환 → cuSPARSELt 하드웨어 sparse 커널 사용
+    SparseSemiStructuredTensor._FORCE_CUTLASS = False  # cuSPARSELt 우선 사용
+    torch.backends.cusparselt.matmul.allow_tf32 = False
+    model.weight = nn.Parameter(to_sparse_semi_structured(model.weight, backend="cusparselt"))
     mode_label = "SPARSE (Apex + semi-structured)"
 else:
     print("[DENSE] 일반 모드 연산 수행...")
