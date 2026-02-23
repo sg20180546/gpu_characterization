@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import sys
 from apex.contrib.sparsity import ASP
+from torch.sparse import to_sparse_semi_structured, SparseSemiStructuredTensor
 
 # 성능 차이를 확실히 보기 위해 행렬 크기를 크게 잡습니다.
 DIM = 8192
@@ -17,11 +18,12 @@ cache_cleaner = torch.randn(128 * 1024 * 1024 // 4, device='cuda') # 128MB L2 Fl
 if use_apex:
     print("[ASP] A100 Structural Sparsity 가속 모드 활성화...")
     asp = ASP()
-    # 하드웨어가 인식할 수 있도록 모델을 준비하고 2:4 패턴 마스크를 생성/적용합니다.
-    # 이 과정에서 내부적으로 가속을 위한 'Sparse 커널'로 교체됩니다.
     asp.init_model_for_pruning(model, mask_calculator="m4n2_1d", verbosity=2)
     asp.compute_sparse_masks()
-    mode_label = "SPARSE (Apex)"
+    # 마스크가 적용된 weight를 실제 sparse 포맷으로 변환 → 하드웨어 sparse 커널 사용
+    SparseSemiStructuredTensor._FORCE_CUTLASS = False
+    model.weight = nn.Parameter(to_sparse_semi_structured(model.weight))
+    mode_label = "SPARSE (Apex + semi-structured)"
 else:
     print("[DENSE] 일반 모드 연산 수행...")
     mode_label = "DENSE (Normal)"
@@ -43,14 +45,14 @@ def run_bench():
         start.record()
         _ = model(input_data)
         end.record()
-        
+
         torch.cuda.synchronize()
         times.append(start.elapsed_time(end))
 
     avg_ms = sum(times) / len(times)
     # 2*M*N*K 연산량 기준 TFLOPS 계산
     tflops = (2 * BATCH_SIZE * DIM * DIM) / (avg_ms * 1e-3) / 1e12
-    
+
     print(f"\n[{mode_label} 결과]")
     print(f"평균 지연 시간: {avg_ms:.4f} ms")
     print(f"실효 연산 성능: {tflops:.2f} TFLOPS")
