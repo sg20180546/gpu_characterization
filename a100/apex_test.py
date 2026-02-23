@@ -28,10 +28,12 @@ if use_apex:
     # 실제 sparse 포맷으로 변환 → cuSPARSELt 커널 직접 호출
     SparseSemiStructuredTensor._FORCE_CUTLASS = False
     sparse_weight = to_sparse_semi_structured(masked_weight)
+    weight_t = masked_weight.t().contiguous() 
+    sparse_weight_t = to_sparse_semi_structured(weight_t)
     print(f"[ASP] Sparse tensor type: {type(sparse_weight).__name__}")
 
     def forward_fn():
-        return torch.mm(input_data, sparse_weight.t())
+        return torch.mm(input_data, sparse_weight_t)
 
     mode_label = "SPARSE (cuSPARSELt 2:4)"
 else:
