@@ -19,7 +19,7 @@ if use_apex:
     asp = ASP()
     # 하드웨어가 인식할 수 있도록 모델을 준비하고 2:4 패턴 마스크를 생성/적용합니다.
     # 이 과정에서 내부적으로 가속을 위한 'Sparse 커널'로 교체됩니다.
-    asp.init_model_for_pruning(model, mask_calculator="24", verbosity=2)
+    asp.init_model_for_pruning(model, mask_calculator="m4n2_1d", verbosity=2)
     asp.compute_sparse_masks()
     mode_label = "SPARSE (Apex)"
 else:
