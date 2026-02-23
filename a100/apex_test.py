@@ -1,37 +1,27 @@
 import torch
 import torch.nn as nn
 import sys
+from torch.sparse import to_sparse_semi_structured, SparseSemiStructuredTensor
 
-# 8192 x 8192 행렬은 A100의 성능을 보기에 아주 적합한 크기입니다.
-ITERATIONS = 500
+# 1. 설정
 DIM = 8192
 BATCH_SIZE = 128
+ITERATIONS = 500
 
-def create_24_mask(tensor):
-    """
-    A100 2:4 구조적 희소성 패턴 수동 생성: 
-    연속된 4개 원소 중 2개를 0으로 만듭니다.
-    """
-    shape = tensor.shape
-    t = tensor.view(-1, 4)
-    mask = torch.zeros_like(t, dtype=torch.bool)
-    # 각 4개 묶음에서 앞의 2개만 살립니다 (2:4 패턴)
-    mask[:, :2] = True
-    return mask.view(shape)
-
-# 1. 모델 준비
+# 2. 모델 준비
 mode = "SPARSE" if "apex=1" in sys.argv else "DENSE"
 model = nn.Linear(DIM, DIM, bias=False).cuda().half()
 input_data = torch.randn(BATCH_SIZE, DIM).cuda().half()
-cache_cleaner = torch.randn(128 * 1024 * 1024 // 4, device='cuda') # 128MB
+cache_cleaner = torch.randn(128 * 1024 * 1024 // 4, device='cuda') # L2 Flush용
 
 if mode == "SPARSE":
-    print("[A100 가속 모드] 2:4 패턴을 가중치에 수동 적용합니다.")
+    print("[A100 가속 모드] 2:4 Sparse 커널을 적용합니다.")
+    # 가중치를 2:4 패턴으로 마스킹 (4개 중 2개 0)
+    mask = torch.tensor([1, 1, 0, 0], device='cuda', dtype=torch.bool).repeat(DIM * DIM // 4)
     with torch.no_grad():
-        mask = create_24_mask(model.weight.data)
-        model.weight.data.mul_(mask)
-    # 중요: A100은 FP16 연산 시 가중치에 2:4 패턴이 있으면 내부적으로 
-    # 'Sparse Tensor Core'를 사용하려고 시도합니다.
+        model.weight.data.view(-1).mul_(mask)
+        # 중요: 이 함수가 A100의 하드웨어 Sparse 가속을 실제로 호출하는 핵심입니다.
+        model.weight.data = to_sparse_semi_structured(model.weight.data)
 else:
     print("[일반 모드] Dense 연산을 수행합니다.")
 
@@ -42,7 +32,7 @@ def run_benchmark():
 
     times = []
     for _ in range(ITERATIONS):
-        # L2 Cache Flush (DRAM 대역폭 효율까지 측정에 포함)
+        # L2 Cache Flush (DRAM에서 새로 읽어오도록 강제)
         _ = cache_cleaner.zero_()
         torch.cuda.synchronize()
 
