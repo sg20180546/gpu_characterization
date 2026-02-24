@@ -62,3 +62,6 @@ print(f"\nSpeedup: {latency_bf16/latency_fp8:.2f}x")
 
 # Speedup: 1.48x
 # (sj) elicer@fc653e2ac6b6:~/gpu_characterization/h100$ 
+
+# Tensor Memory Accelerator
+# Delayed Scaling
