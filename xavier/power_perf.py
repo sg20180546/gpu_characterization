@@ -218,13 +218,48 @@ def run_all_modes():
             print(f"{mid:>4} | {ms:>10.4f} | {tf:>12.3f} | {pw:>8.2f} | {eff:>14.2f}")
 
 
+MODES = {
+    0: "MAXN",
+    1: "MODE_10W",
+    2: "MODE_15W",
+    3: "MODE_30W_ALL",
+    4: "MODE_30W_6CORE",
+    5: "MODE_30W_4CORE",
+    6: "MODE_30W_2CORE",
+    7: "MODE_15W_DESKTOP",
+}
+
 if __name__ == "__main__":
     if os.geteuid() != 0:
         print("[경고] tegrastats 전력 읽기는 sudo가 필요합니다.")
         print("  → sudo python3 power_perf.py")
         sys.exit(1)
 
-    if "--all-modes" in sys.argv:
+    # --mode <id> 로 특정 모드 지정
+    if "--mode" in sys.argv:
+        idx = sys.argv.index("--mode")
+        mode_id = int(sys.argv[idx + 1])
+        if mode_id not in MODES:
+            print(f"유효한 모드: {list(MODES.keys())}")
+            sys.exit(1)
+        print(f"nvpmodel 모드 {mode_id} ({MODES[mode_id]}) 로 전환 중...")
+        ret = subprocess.run(["nvpmodel", "-m", str(mode_id)], capture_output=True, text=True)
+        if ret.returncode != 0:
+            print(f"모드 전환 실패: {ret.stderr}")
+            sys.exit(1)
+        time.sleep(2)
+        run_bench()
+
+    elif "--all-modes" in sys.argv:
         run_all_modes()
+
     else:
+        # 모드 목록 출력 후 현재 모드로 벤치
+        print("사용 가능한 모드:")
+        for mid, name in MODES.items():
+            print(f"  {mid}: {name}")
+        print()
+        print("특정 모드 지정: sudo python3 power_perf.py --mode <id>")
+        print("모든 모드 순회: sudo python3 power_perf.py --all-modes")
+        print()
         run_bench()
