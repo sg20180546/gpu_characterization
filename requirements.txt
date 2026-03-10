@@ -1,0 +1,6 @@
+torch
+apex
+triton
+transformers
+pynvml
+transformer_engine
